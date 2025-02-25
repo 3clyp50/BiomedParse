@@ -22,6 +22,9 @@ if token:
 current_dir = Path(__file__).parent
 sys.path.append(str(current_dir))
 
+import sys
+sys.path.append("../../BiomedParse")
+
 from modeling.BaseModel import BaseModel
 from modeling import build_model
 from utilities.arguments import load_opt_from_config_files
@@ -233,7 +236,7 @@ def on_modality_change(modality):
     return gr.Dropdown(visible=False)
 
 def initialize_model():
-    opt = load_opt_from_config_files(["configs/biomedparse_inference.yaml"])
+    opt = load_opt_from_config_files(["../configs/biomedparse_inference.yaml"])
     pretrained_pth = 'hf_hub:microsoft/BiomedParse'
     opt['device'] = 'cuda' if torch.cuda.is_available() else 'cpu'
     model = BaseModel(opt, build_model(opt)).from_pretrained(pretrained_pth).eval()
