@@ -8,6 +8,7 @@ import os
 import sys
 import io
 import asyncio  # import here
+import cv2
 
 # Add BiomedParse to path
 repo_root = str(Path(__file__).parent.parent.parent)
@@ -54,7 +55,7 @@ def initialize_model():
         logger.error(f"Failed to initialize model: {str(e)}")
         return False
 
-def process_image(image_file, prompts):
+async def process_image(image_file, prompts):
     try:
         if model is None:
             if not initialize_model():
@@ -72,28 +73,79 @@ def process_image(image_file, prompts):
         
         # Process image based on type
         if filename.lower().endswith(('.dcm', '.dicom')):
-            image = asyncio.run(process_dicom(contents))
+            images = await process_dicom(contents)  # Returns list of images
         elif filename.lower().endswith(('.nii', '.nii.gz')):
-            image = asyncio.run(process_nifti(contents))
+            images = await process_nifti(contents)  # Returns list of images
         else:
-            image = process_rgb(contents)
+            image = await process_rgb(contents)  # Returns single image
+            images = [image]  # Convert to list for consistent handling
         
-        # Run inference
-        with torch.no_grad():
-            pred_masks = interactive_infer_image(model, image, prompts)
+        # Check if images are valid
+        if not images or any(img is None for img in images):
+            logger.error("No valid images returned from processing.")
+            return None, "Error: No valid images returned from processing."
         
-        # Convert masks to images
+        # Run inference on each view
         output_images = []
         confidences = []
-        for pred in pred_masks:
-            mask_img = Image.fromarray((pred * 255).astype(np.uint8))
-            output_images.append(mask_img)
-            confidences.append(float(pred.mean()))
+        view_names = ["Axial", "Coronal", "Sagittal"] if len(images) == 3 else ["Original"]
+        
+        for i, image in enumerate(images):
+            # Add original image
+            output_images.append(image)
+            
+            # Run inference
+            with torch.no_grad():
+                pred_masks = interactive_infer_image(model, image, prompts)
+                logger.info(f"Predicted masks for image {i}: {pred_masks}")  # Log predicted masks
+            
+            # Check if pred_masks is valid
+            if pred_masks is None or len(pred_masks) == 0:
+                logger.error("Predicted masks are None or empty.")
+                return None, "Error: Predicted masks are None or empty."
+            
+            # Convert input image to numpy array
+            input_np = np.array(image)
+            
+            for j, pred in enumerate(pred_masks):
+                if pred is None:
+                    logger.error(f"Predicted mask {j} is None.")
+                    continue  # Skip this mask if it's None
+                
+                # Create binary mask (threshold at 0.5)
+                binary_mask = (pred > 0.5).astype(np.uint8)
+                
+                # Create colored mask for visualization
+                colored_mask = np.zeros((*binary_mask.shape, 3), dtype=np.uint8)
+                colored_mask[binary_mask > 0] = [255, 0, 0]  # Red for the mask
+                
+                # Create overlay
+                alpha = 0.5
+                overlay = input_np.copy()
+                overlay[binary_mask > 0] = cv2.addWeighted(
+                    overlay[binary_mask > 0], 
+                    1-alpha,
+                    colored_mask[binary_mask > 0], 
+                    alpha, 
+                    0
+                )
+                
+                # Convert overlay to PIL Image
+                overlay_img = Image.fromarray(overlay)
+                output_images.append(overlay_img)
+                
+                # Calculate confidence (mean probability in the mask region)
+                if binary_mask.sum() > 0:
+                    confidence = float(pred[binary_mask > 0].mean())
+                else:
+                    confidence = float(pred.mean())
+                confidences.append(confidence)
         
         # Create result message
         result_message = "Results:\n"
-        for prompt, conf in zip(prompts, confidences):
-            result_message += f"- {prompt}: Confidence = {conf:.4f}\n"
+        for i, (prompt, conf) in enumerate(zip(prompts * len(images), confidences)):
+            view_type = view_names[i // len(prompts)]
+            result_message += f"- {prompt} ({view_type}): Confidence = {conf:.4f}\n"
         
         return output_images, result_message
         
@@ -102,10 +154,10 @@ def process_image(image_file, prompts):
         return None, f"Error: {str(e)}"
 
 # Create Gradio interface
-def gradio_interface(image_file, prompts_text):
+async def gradio_interface(image_file, prompts_text):
     # Parse prompts
     prompts = [p.strip() for p in prompts_text.split(',')]
-    return process_image(image_file, prompts)
+    return await process_image(image_file, prompts)
 
 # Initialize the model at startup
 initialize_model()
@@ -118,13 +170,23 @@ iface = gr.Interface(
         gr.Textbox(label="Prompts (comma-separated)", placeholder="tumor, lesion")
     ],
     outputs=[
-        gr.Gallery(label="Prediction Masks"),
-        gr.Textbox(label="Results")
+        gr.Gallery(label="Results", columns=3, show_label=True, height="auto"),
+        gr.Textbox(label="Confidence Scores", show_label=True)
     ],
     title="BiomedParse Image Analysis",
-    description="Upload a medical image and provide prompts to analyze specific features.",
+    description="""Upload a medical image and provide prompts to analyze specific features.
+    For 3D DICOM and NIFTI files, you'll see Axial, Coronal, and Sagittal views with their corresponding predictions.
+    For 2D images (including 2D DICOM slices), you'll see the original image and predictions.
+    
+    Example prompts:
+    - For CT/DICOM: "tumor, lesion, nodule"
+    - For Brain MRI/NIFTI: "tumor, edema, necrosis"
+    - For Skin lesions: "melanoma, nevus, carcinoma"
+    """,
     examples=[
-        [os.path.join(examples_dir, "CT_lung_nodule.dcm"), "tumor, lesion"],
+        [os.path.join(examples_dir, "CT_lung_nodule.dcm"), "tumor, nodule"],
+        [os.path.join(examples_dir, "amos_0328.nii.gz"), "worrying area"],
+        [os.path.join(examples_dir, "ISIC_0015551.jpg"), "melanoma, nevus"],
     ],
     allow_flagging="never"
 )
