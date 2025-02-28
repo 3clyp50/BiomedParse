@@ -17,18 +17,31 @@ async def process_dicom(contents: bytes) -> Image.Image:
             # Read DICOM data
             dicom_data = pydicom.dcmread(io.BytesIO(contents))
             
-            # Get pixel array and rescale to 0-255
-            pixel_array = dicom_data.pixel_array
+            # Get pixel array and apply rescale
+            pixel_array = dicom_data.pixel_array.astype(float)
             if hasattr(dicom_data, 'RescaleSlope') and hasattr(dicom_data, 'RescaleIntercept'):
                 pixel_array = pixel_array * dicom_data.RescaleSlope + dicom_data.RescaleIntercept
             
-            # Normalize to 0-255
-            pixel_min = pixel_array.min()
-            pixel_max = pixel_array.max()
-            if pixel_max != pixel_min:
-                pixel_array = ((pixel_array - pixel_min) / (pixel_max - pixel_min) * 255).astype(np.uint8)
+            # Apply window/level adjustment
+            if hasattr(dicom_data, 'WindowCenter') and hasattr(dicom_data, 'WindowWidth'):
+                window_center = dicom_data.WindowCenter
+                window_width = dicom_data.WindowWidth
+                if isinstance(window_center, pydicom.multival.MultiValue):
+                    window_center = window_center[0]
+                if isinstance(window_width, pydicom.multival.MultiValue):
+                    window_width = window_width[0]
             else:
-                pixel_array = np.zeros_like(pixel_array, dtype=np.uint8)
+                # If no window/level in DICOM, estimate them
+                window_width = np.max(pixel_array) - np.min(pixel_array)
+                window_center = np.min(pixel_array) + (window_width / 2)
+            
+            # Apply window/level transformation
+            min_value = window_center - window_width // 2
+            max_value = window_center + window_width // 2
+            pixel_array = np.clip(pixel_array, min_value, max_value)
+            
+            # Normalize to 0-255
+            pixel_array = ((pixel_array - min_value) / (max_value - min_value) * 255).astype(np.uint8)
             
             # Convert to RGB
             if len(pixel_array.shape) == 2:
