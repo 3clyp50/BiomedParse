@@ -65,7 +65,7 @@ tokenizers>=0.14.1
 # torch>=2.0.0
 # transformers>=4.34.0
 
-gradio>=4.40.0
+gradio>=4.44.1
 # Pillow>=9.0.0
 # numpy>=1.21.0
 tqdm>=4.65.0

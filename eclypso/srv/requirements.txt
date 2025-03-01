@@ -17,3 +17,6 @@ redis==5.0.1
 psutil==5.9.6
 httpx==0.25.2
 gradio>=4.0.0 
+pylibjpeg==1.3.4
+pylibjpeg-libjpeg==1.4.0
+gdcm==3.0.10
